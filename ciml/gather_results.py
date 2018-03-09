@@ -14,6 +14,7 @@
 
 import datetime
 import io
+import os
 
 import pandas
 import requests
@@ -33,11 +34,22 @@ def _parse_dstat_date(date_str):
                              int(time_pieces[1]), int(time_pieces[2]))
 
 
-def _get_dstat_file(artifact_link):
+def _get_dstat_file(artifact_link, run_uuid=None):
     paths = ['controller/logs/dstat-csv_log.txt.gz',
              'controller/logs/dstat-csv_log.txt',
              'logs/dstat-csv_log.txt',
              'logs/dstat-csv_log.txt.gz']
+    # TODO(andreaf) We may want this configurable if case we build multiple
+    # datasets
+    local_path= ['dataset']
+    # TODO(andreaf) This needs to be fixed because when we come different routes
+    # we will need to lookup the file from file system or not, and behave
+    # differently:
+    # - MQTT: new file, file should not be there
+    # - DB: file may be there or not
+    # - Stable dataset: file must be there
+    local_store = os.pathsep.join([os.path.realpath(__file__), os.path.pardir,
+                                   local_path])
     for path in paths:
         url = artifact_link + '/' + path
         resp = requests.get(url)
@@ -52,24 +64,12 @@ def _get_dstat_file(artifact_link):
         return None
 
 def _get_result_for_run(run, session):
-    run_id = run.id
     run_uuid = run.uuid
-    # Check if we are interested in this build at all
-    meta = api.get_run_metadata(run_uuid, session=session)
-    build_names = [x.value for x in meta if x.key == 'build_name']
-    if len(build_names) >= 1:
-        build_name = build_names[0]
-    else:
-        return None
-    # NOTE(mtreinish): Only be concerned with single node to start
-    if 'multinode' in build_name:
-        return None
     result = {}
-    run = api.get_run_by_id(run_id, session=session)
-    dstat = _get_dstat_file(run.artifacts)
+    dstat = _get_dstat_file(run.artifacts, run.uuid)
     if dstat is None:
         return None
-    test_runs = api.get_test_runs_by_run_id(run_uuid, session=session)
+    test_runs = api.get_test_runs_by_run_id(run.uuid, session=session)
     session.close()
     tests = []
     for test_run in test_runs:
@@ -99,6 +99,16 @@ def get_subunit_results(build_uuid, db_uri):
     runs = api.get_runs_by_key_value('build_uuid', build_uuid, session=session)
     results = []
     for run in runs:
+        # Check if we are interested in this build at all
+        meta = api.get_run_metadata(run.uuid, session=session)
+        build_names = [x.value for x in meta if x.key == 'build_name']
+        if len(build_names) >= 1:
+            build_name = build_names[0]
+        else:
+            continue
+        # NOTE(mtreinish): Only be concerned with single node to start
+        if 'multinode' in build_name:
+            continue
         result = _get_result_for_run(run, session)
         if result:
             results.append(result)
